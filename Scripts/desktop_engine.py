@@ -29,6 +29,9 @@ OCI_IMAGE_ID = cfg['OCI_IMAGE_ID']
 OCI_SSH_KEY = cfg['OCI_SSH_PUBLIC_KEY']
 BOOT_VOL_SIZE = int(cfg.get('OCI_BOOT_VOLUME_SIZE_IN_GBS', 200))
 BOOT_VOL_VPUS = int(cfg.get('OCI_BOOT_VOLUME_VPUS_PER_GB', 10))
+OCI_DISPLAY_NAME = cfg.get('OCI_DISPLAY_NAME', 'HAIVA')
+OCI_ASSIGN_PUBLIC_IP = cfg.get('OCI_ASSIGN_PUBLIC_IP', True)
+OCI_ASSIGN_IPV6_IP = cfg.get('OCI_ASSIGN_IPV6_IP', False)
 DISCORD_WEBHOOK = cfg.get('DISCORD_WEBHOOK_URL', '')
 TG_TOKEN = cfg.get('TELEGRAM_BOT_TOKEN', '')
 TG_CHAT_ID = cfg.get('TELEGRAM_CHAT_ID', '')
@@ -113,7 +116,12 @@ def main():
         return
 
     shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(ocpus=OCI_OCPUS, memory_in_gbs=OCI_MEMORY)
-    create_vnic_details = oci.core.models.CreateVnicDetails(subnet_id=OCI_SUBNET_ID, assign_public_ip=True, assign_private_dns_record=True)
+    create_vnic_details = oci.core.models.CreateVnicDetails(
+        subnet_id=OCI_SUBNET_ID, 
+        assign_public_ip=OCI_ASSIGN_PUBLIC_IP, 
+        assign_private_dns_record=True,
+        assign_ipv6_ip=OCI_ASSIGN_IPV6_IP
+    )
     source_details = oci.core.models.InstanceSourceViaImageDetails(
         source_type="image", image_id=OCI_IMAGE_ID, boot_volume_size_in_gbs=BOOT_VOL_SIZE, boot_volume_vpus_per_gb=BOOT_VOL_VPUS
     )
@@ -127,7 +135,7 @@ def main():
 
         for ad in availability_domains:
             launch_blueprint = oci.core.models.LaunchInstanceDetails(
-                compartment_id=compartment_id, display_name="HAIVA",
+                compartment_id=compartment_id, display_name=OCI_DISPLAY_NAME,
                 shape=OCI_SHAPE, shape_config=shape_config, source_details=source_details, 
                 create_vnic_details=create_vnic_details, metadata={"ssh_authorized_keys": OCI_SSH_KEY}, 
                 availability_domain=ad

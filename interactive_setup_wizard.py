@@ -1,3 +1,4 @@
+from datetime import datetime
 import json
 import os
 import sys
@@ -104,6 +105,12 @@ def get_ids_via_browser(config):
     if sub_id: config["OCI_SUBNET_ID"] = sub_id
     while not config.get("OCI_SUBNET_ID"):
         config["OCI_SUBNET_ID"] = input("⚠️ Subnet ID is required. Paste 'subnetId': ").strip()
+
+    # Display Name
+    print("\nWhat should we name the server?")
+    def_name = config.get("OCI_DISPLAY_NAME", f"instance-{datetime.now().strftime('%Y%m%d-%H%M')}")
+    name = input(f"Server Name [Default {def_name}]: ").strip()
+    config["OCI_DISPLAY_NAME"] = name if name else def_name
 
 def configure_delays(config):
     clear_screen()
