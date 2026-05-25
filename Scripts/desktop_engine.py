@@ -3,6 +3,7 @@ import json
 import time
 import sys
 import oci
+import urllib.request
 from datetime import datetime
 
 # =========================================================================
@@ -28,6 +29,9 @@ OCI_IMAGE_ID = cfg['OCI_IMAGE_ID']
 OCI_SSH_KEY = cfg['OCI_SSH_PUBLIC_KEY']
 BOOT_VOL_SIZE = int(cfg.get('OCI_BOOT_VOLUME_SIZE_IN_GBS', 200))
 BOOT_VOL_VPUS = int(cfg.get('OCI_BOOT_VOLUME_VPUS_PER_GB', 10))
+DISCORD_WEBHOOK = cfg.get('DISCORD_WEBHOOK_URL', '')
+TG_TOKEN = cfg.get('TELEGRAM_BOT_TOKEN', '')
+TG_CHAT_ID = cfg.get('TELEGRAM_CHAT_ID', '')
 
 # Delay Control Variables
 DELAY_CAPACITY = int(cfg.get('RETRY_DELAY_CAPACITY', 180))
@@ -37,6 +41,46 @@ def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {message}")
     sys.stdout.flush()
+
+def send_notifications(server_name, server_id):
+    # Discord
+    if DISCORD_WEBHOOK:
+        payload = {
+            "content": "🎉 **Oracle Cloud Server Created!**",
+            "embeds": [{
+                "title": "Sentinel Success",
+                "color": 5763719,
+                "fields": [
+                    {"name": "Server Name", "value": server_name, "inline": True},
+                    {"name": "OCID", "value": f"`{server_id}`", "inline": False},
+                    {"name": "Shape", "value": OCI_SHAPE, "inline": True},
+                    {"name": "Resources", "value": f"{OCI_OCPUS} OCPU / {OCI_MEMORY}GB RAM", "inline": True}
+                ],
+                "footer": {"text": "Oracle Capacity Sentinel"}
+            }]
+        }
+        try:
+            req = urllib.request.Request(DISCORD_WEBHOOK, data=json.dumps(payload).encode('utf-8'), 
+                                       headers={'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response: pass
+        except Exception as e: log(f"Discord Notification Error: {str(e)}")
+
+    # Telegram
+    if TG_TOKEN and TG_CHAT_ID:
+        text = (
+            f"🎉 *Oracle Cloud Server Created!*\n\n"
+            f"*Name:* {server_name}\n"
+            f"*OCID:* `{server_id}`\n"
+            f"*Shape:* {OCI_SHAPE}\n"
+            f"*Resources:* {OCI_OCPUS} OCPU / {OCI_MEMORY}GB RAM"
+        )
+        url = f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage"
+        payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "Markdown"}
+        try:
+            req = urllib.request.Request(url, data=json.dumps(payload).encode('utf-8'), 
+                                       headers={'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req) as response: pass
+        except Exception as e: log(f"Telegram Notification Error: {str(e)}")
 
 def main():
     log("Initializing OCS (Desktop Edition)...")
@@ -95,6 +139,7 @@ def main():
                 server = response.data
                 
                 log("\n" + "="*55 + f"\nSUCCESS: SERVER CREATED!\nName: {server.display_name}\nOCID: {server.id}\n" + "="*55)
+                send_notifications(server.display_name, server.id)
                 sys.stdout.write('\a'); sys.stdout.flush() # Terminal Beep
                 return # Exits script entirely upon success
                 
@@ -102,6 +147,7 @@ def main():
                 if e.status == 500 or "Out of host capacity" in str(e.message):
                     log(f"Capacity full in {ad}.")
                     capacity_error_hit = True
+                    consecutive_rate_limits = 0 # Reset strikes on successful capacity check
                     continue # Try next AD instantly without sleeping
                     
                 elif e.status == 429 or "TooManyRequests" in str(e.code):

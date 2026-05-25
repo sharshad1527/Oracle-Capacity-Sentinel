@@ -124,6 +124,26 @@ def configure_delays(config):
     vol = input(f"Boot Volume Size (GB) [Default {def_vol}]: ").strip()
     config["OCI_BOOT_VOLUME_SIZE_IN_GBS"] = int(vol) if vol.isdigit() else def_vol
 
+def configure_notifications(config):
+    clear_screen()
+    print("=========================================================")
+    print("             STEP 4: NOTIFICATIONS (OPTIONAL)")
+    print("=========================================================")
+    print("The Sentinel can notify you when a server is created.")
+    
+    # Discord
+    webhook = input(f"\nDiscord Webhook URL (Leave blank to skip): ").strip()
+    config["DISCORD_WEBHOOK_URL"] = webhook if webhook else config.get("DISCORD_WEBHOOK_URL", "")
+    
+    # Telegram
+    tg_token = input(f"Telegram Bot Token (Leave blank to skip): ").strip()
+    if tg_token:
+        config["TELEGRAM_BOT_TOKEN"] = tg_token
+        config["TELEGRAM_CHAT_ID"] = input("Telegram Chat ID: ").strip()
+    else:
+        config["TELEGRAM_BOT_TOKEN"] = config.get("TELEGRAM_BOT_TOKEN", "")
+        config["TELEGRAM_CHAT_ID"] = config.get("TELEGRAM_CHAT_ID", "")
+
 def main():
     clear_screen()
     print("=========================================================")
@@ -154,6 +174,9 @@ def main():
     
     # Step 4: Configure Timers
     configure_delays(config)
+
+    # Step 5: Notifications
+    configure_notifications(config)
     
     # Save Configuration
     with open(CONFIG_FILE, 'w') as f:
