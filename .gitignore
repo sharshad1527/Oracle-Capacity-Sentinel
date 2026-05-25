@@ -1,0 +1,20 @@
+# Local configuration file containing sensitive OCIDs and tokens
+config.json
+
+# Python environment artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.env
+venv/
+ENV/
+
+# OS-specific temporary files
+.DS_Store
+Thumbs.db
+
+# Runtime sentinel pause lockfiles
+.sentinel_paused
+.sniper_paused

@@ -1,0 +1,158 @@
+import os
+import json
+import time
+import sys
+import oci
+from datetime import datetime
+
+# =========================================================================
+#  CONFIGURATION & MEMORY INITIALIZATION
+# =========================================================================
+# Resolves path to config.json in the parent (root) directory
+CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'config.json')
+SESSION_NAME = "oci_sentinel" # Unified tmux targeting
+
+try:
+    with open(CONFIG_FILE, "r") as f:
+        cfg = json.load(f)
+except FileNotFoundError:
+    print(f"ERROR: {CONFIG_FILE} not found. Please run the setup wizard first.")
+    sys.exit(1)
+
+# Load variables into memory once to prevent disk I/O in the loop
+OCI_SHAPE = cfg.get('OCI_SHAPE', 'VM.Standard.A1.Flex')
+OCI_OCPUS = float(cfg.get('OCI_OCPUS', 4))
+OCI_MEMORY = float(cfg.get('OCI_MEMORY_IN_GBS', 24))
+OCI_MAX_INSTANCES = int(cfg.get('OCI_MAX_INSTANCES', 1))
+OCI_SUBNET_ID = cfg['OCI_SUBNET_ID']
+OCI_IMAGE_ID = cfg['OCI_IMAGE_ID']
+OCI_SSH_KEY = cfg['OCI_SSH_PUBLIC_KEY']
+BOOT_VOL_SIZE = int(cfg.get('OCI_BOOT_VOLUME_SIZE_IN_GBS', 200))
+BOOT_VOL_VPUS = int(cfg.get('OCI_BOOT_VOLUME_VPUS_PER_GB', 10))
+
+# Delay Control Variables
+DELAY_CAPACITY = int(cfg.get('RETRY_DELAY_CAPACITY', 180))
+DELAY_RATE_LIMIT = int(cfg.get('RETRY_DELAY_RATE_LIMIT', 300))
+
+def log(message):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
+    sys.stdout.flush()
+
+def main():
+    log("Initializing OCS (Termux Edition)...")
+    try:
+        oci_config = oci.config.from_file()
+        compartment_id = oci_config["tenancy"]
+    except Exception as e:
+        log(f"Config Initialization Error: {str(e)}")
+        return
+
+    compute_client = oci.core.ComputeClient(oci_config)
+    identity_client = oci.identity.IdentityClient(oci_config)
+
+    log(f"Verifying target resource status for shape {OCI_SHAPE}...")
+    try:
+        instances_data = compute_client.list_instances(compartment_id=compartment_id).data
+        active_instances = [i for i in instances_data if i.lifecycle_state != "TERMINATED" and i.shape == OCI_SHAPE]
+        if len(active_instances) >= OCI_MAX_INSTANCES:
+            log(f"HALT: Limit met. Already have {len(active_instances)} instance(s) running.")
+            return
+    except Exception as e:
+        log(f"Failed to query account instances: {str(e)}")
+        return
+
+    try:
+        ad_data = identity_client.list_availability_domains(compartment_id=compartment_id).data
+        availability_domains = [ad.name for ad in ad_data]
+    except Exception as e:
+        log(f"Failed to query Availability Domains: {str(e)}")
+        return
+
+    shape_config = oci.core.models.LaunchInstanceShapeConfigDetails(ocpus=OCI_OCPUS, memory_in_gbs=OCI_MEMORY)
+    create_vnic_details = oci.core.models.CreateVnicDetails(subnet_id=OCI_SUBNET_ID, assign_public_ip=True, assign_private_dns_record=True)
+    source_details = oci.core.models.InstanceSourceViaImageDetails(
+        source_type="image", image_id=OCI_IMAGE_ID, boot_volume_size_in_gbs=BOOT_VOL_SIZE, boot_volume_vpus_per_gb=BOOT_VOL_VPUS
+    )
+
+    log("Deployment structure compiled securely in memory. Starting hunt loop.")
+    consecutive_rate_limits = 0
+
+    while True:
+        capacity_error_hit = False
+        rate_limit_hit_in_loop = False
+
+        for ad in availability_domains:
+            launch_blueprint = oci.core.models.LaunchInstanceDetails(
+                compartment_id=compartment_id, display_name="HAIVA",
+                shape=OCI_SHAPE, shape_config=shape_config, source_details=source_details, 
+                create_vnic_details=create_vnic_details, metadata={"ssh_authorized_keys": OCI_SSH_KEY}, 
+                availability_domain=ad
+            )
+            
+            try:
+                log(f"Attempting launch in domain {ad}...")
+                response = compute_client.launch_instance(launch_instance_details=launch_blueprint)
+                server = response.data
+                
+                log("\n" + "="*55 + f"\nSUCCESS: SERVER CREATED!\nName: {server.display_name}\nOCID: {server.id}\n" + "="*55)
+                os.system('termux-notification --title "SENTINEL SUCCESS!" --content "Your Server is ready." --priority high --vibrate 1000')
+                sys.stdout.write('\a'); sys.stdout.flush()
+                return # Exits script entirely upon success
+                
+            except oci.exceptions.ServiceError as e:
+                if e.status == 500 or "Out of host capacity" in str(e.message):
+                    log(f"Capacity full in {ad}.")
+                    capacity_error_hit = True
+                    continue # Try next AD instantly without sleeping
+                    
+                elif e.status == 429 or "TooManyRequests" in str(e.code):
+                    consecutive_rate_limits += 1
+                    log(f"API Rate Limit Hit in {ad} (Strike {consecutive_rate_limits}).")
+                    rate_limit_hit_in_loop = True
+                    break # Stop checking ADs, go straight to sleep/pause
+                else:
+                    log(f"CRITICAL API EXCEPTION [{e.status}]: {e.message.strip()}")
+                    return
+            except Exception as e:
+                log(f"Network transport drop: {str(e)}")
+                capacity_error_hit = True
+                continue
+
+        # Post-AD Loop Delay & Notification Handling
+        if rate_limit_hit_in_loop:
+            if consecutive_rate_limits >= 3:
+                log("WARNING: 3 Strikes. Pausing script. Awaiting your command via Notification...")
+                
+                lock_file = os.path.expanduser("~/.sentinel_paused")
+                os.system(f"touch {lock_file}")
+                
+                action_continue = f"rm {lock_file}"
+                action_kill = f"tmux kill-session -t {SESSION_NAME}" # Unified targeting
+                
+                noti_cmd = (
+                    f'termux-notification --id "sentinel_alert" --title "⚠️ Sentinel Paused" '
+                    f'--content "Hit limit 3 times. What should I do?" --priority high --vibrate 500,500 '
+                    f'--button1 "Continue" --button1-action "{action_continue}" '
+                    f'--button2 "Kill" --button2-action "{action_kill}"'
+                )
+                os.system(noti_cmd)
+                
+                while os.path.exists(lock_file):
+                    time.sleep(2)
+                    
+                log("Lock file removed via notification. Resuming Sentinel operation...")
+                consecutive_rate_limits = 0 
+            else:
+                log(f"Rate limited. Cycling queue in {DELAY_RATE_LIMIT}s...")
+                time.sleep(DELAY_RATE_LIMIT)
+                
+        elif capacity_error_hit:
+            log(f"All queried domains are full. Cycling queue in {DELAY_CAPACITY}s...")
+            time.sleep(DELAY_CAPACITY)
+        else:
+            # Fallback delay if no known errors but loop completed
+            time.sleep(DELAY_CAPACITY)
+
+if __name__ == "__main__":
+    main()
