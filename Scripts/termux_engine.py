@@ -38,9 +38,24 @@ DISCORD_WEBHOOK = cfg.get('DISCORD_WEBHOOK_URL', '')
 TG_TOKEN = cfg.get('TELEGRAM_BOT_TOKEN', '')
 TG_CHAT_ID = cfg.get('TELEGRAM_CHAT_ID', '')
 
-# Delay Control Variables
-DELAY_CAPACITY = int(cfg.get('RETRY_DELAY_CAPACITY', 180))
+
+# Delay Control Variables - Enhanced for Range/Fixed support
+delay_raw = cfg.get('RETRY_DELAY_CAPACITY', 180)
+if isinstance(delay_raw, list) and len(delay_raw) >= 2:
+    DELAY_MIN = int(delay_raw[0])
+    DELAY_MAX = int(delay_raw[1])
+    USE_RANGE = True
+else:
+    DELAY_FIXED = int(delay_raw)
+    USE_RANGE = False
+
 DELAY_RATE_LIMIT = int(cfg.get('RETRY_DELAY_RATE_LIMIT', 300))
+
+def get_sleep_time():
+    if USE_RANGE:
+        return random.randint(DELAY_MIN, DELAY_MAX)
+    return DELAY_FIXED
+
 
 def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -206,12 +221,11 @@ def main():
                 time.sleep(jitter_delay)
                 
         elif capacity_error_hit:
-            jitter_delay = random.randint(DELAY_CAPACITY, int(DELAY_CAPACITY * 1.5))
-            log(f"All queried domains are full. Cycling queue in {jitter_delay}s (Jitter applied)...")
-            time.sleep(jitter_delay)
+            sleep_time = get_sleep_time()
+            log(f"All queried domains are full. Cycling queue in {sleep_time}s...")
+            time.sleep(sleep_time)
         else:
-            jitter_delay = random.randint(DELAY_CAPACITY, int(DELAY_CAPACITY * 1.5))
-            time.sleep(jitter_delay)
+            time.sleep(get_sleep_time())
 
 if __name__ == "__main__":
     main()
