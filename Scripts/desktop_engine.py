@@ -56,9 +56,32 @@ def get_sleep_time():
     return DELAY_FIXED
 
 
+# Persistence & Analytics Initialization
+STATS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'sentinel_stats.json')
+stats = {'total_attempts': 0, 'capacity_errors': 0, 'rate_limits': 0}
+last_save_time = time.time()
+
+def load_stats():
+    global stats
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, 'r') as f:
+                stats = json.load(f)
+        except: pass
+
+def save_stats():
+    global last_save_time
+    try:
+        with open(STATS_FILE, 'w') as f:
+            json.dump(stats, f, indent=4)
+        last_save_time = time.time()
+    except: pass
+
 def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
+    # Include attempt count if available
+    prefix = f"[#{stats['total_attempts']}] " if stats['total_attempts'] > 0 else ""
+    print(f"[{timestamp}] {prefix}{message}")
     sys.stdout.flush()
 
 def send_notifications(server_name, server_id):
@@ -145,9 +168,19 @@ def main():
     log("Deployment structure compiled securely in memory. Starting hunt loop.")
     consecutive_rate_limits = 0
 
-    while True:
-        capacity_error_hit = False
-        rate_limit_hit_in_loop = False
+    load_stats()
+    log("Stats loaded. Starting hunt loop...")
+    
+    try:
+        while True:
+            stats['total_attempts'] += 1
+            capacity_error_hit = False
+            rate_limit_hit_in_loop = False
+            
+            # Periodic Save (Hourly)
+            if time.time() - last_save_time > 3600:
+                save_stats()
+                log("Analytics auto-saved to disk.")
 
         for ad in availability_domains:
             launch_blueprint = oci.core.models.LaunchInstanceDetails(
@@ -170,14 +203,14 @@ def main():
             except oci.exceptions.ServiceError as e:
                 if e.status == 500 or "Out of host capacity" in str(e.message):
                     log(f"Capacity full in {ad}.")
-                    capacity_error_hit = True
+                    capacity_error_hit = True; stats["capacity_errors"] += 1
                     consecutive_rate_limits = 0 # Reset strikes on successful capacity check
                     continue # Try next AD instantly without sleeping
                     
                 elif e.status == 429 or "TooManyRequests" in str(e.code):
                     consecutive_rate_limits += 1
                     log(f"API Rate Limit Hit in {ad} (Strike {consecutive_rate_limits}).")
-                    rate_limit_hit_in_loop = True
+                    rate_limit_hit_in_loop = True; stats["rate_limits"] += 1
                     break # Stop checking ADs, go straight to sleep/pause
                 else:
                     log(f"CRITICAL API EXCEPTION [{e.status}]: {e.message.strip()}")
@@ -209,4 +242,14 @@ def main():
             time.sleep(get_sleep_time())
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n[SENTINEL] Shutdown signal received. Saving analytics...")
+        save_stats()
+        print("[SENTINEL] Session saved. Goodbye!")
+        sys.exit(0)
+    except Exception as e:
+        save_stats()
+        print(f"\n[CRITICAL] Unexpected error: {e}")
+        sys.exit(1)
