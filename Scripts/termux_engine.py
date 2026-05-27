@@ -4,6 +4,7 @@ import time
 import sys
 import oci
 import urllib.request
+import random
 from datetime import datetime
 
 # =========================================================================
@@ -200,14 +201,17 @@ def main():
                 log("Lock file removed via notification. Resuming Sentinel operation...")
                 consecutive_rate_limits = 0 
             else:
-                log(f"Rate limited. Cycling queue in {DELAY_RATE_LIMIT}s...")
-                time.sleep(DELAY_RATE_LIMIT)
+                jitter_delay = random.randint(DELAY_RATE_LIMIT, int(DELAY_RATE_LIMIT * 1.5))
+                log(f"Rate limited. Cycling queue in {jitter_delay}s (Jitter applied)...")
+                time.sleep(jitter_delay)
                 
         elif capacity_error_hit:
-            log(f"All queried domains are full. Cycling queue in {DELAY_CAPACITY}s...")
-            time.sleep(DELAY_CAPACITY)
+            jitter_delay = random.randint(DELAY_CAPACITY, int(DELAY_CAPACITY * 1.5))
+            log(f"All queried domains are full. Cycling queue in {jitter_delay}s (Jitter applied)...")
+            time.sleep(jitter_delay)
         else:
-            time.sleep(DELAY_CAPACITY)
+            jitter_delay = random.randint(DELAY_CAPACITY, int(DELAY_CAPACITY * 1.5))
+            time.sleep(jitter_delay)
 
 if __name__ == "__main__":
     main()
