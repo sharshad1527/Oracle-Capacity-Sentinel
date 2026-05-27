@@ -169,96 +169,84 @@ def main():
 
     log("Deployment structure compiled securely in memory. Starting hunt loop.")
     consecutive_rate_limits = 0
-
     load_stats()
     log("Stats loaded. Starting hunt loop...")
-    
-    try:
-        while True:
-            stats['total_attempts'] += 1
+
+    while True:
+        try:
+            stats["total_attempts"] += 1
             capacity_error_hit = False
             rate_limit_hit_in_loop = False
-            
-            # Periodic Save (Hourly)
+
             if time.time() - last_save_time > 3600:
                 save_stats()
                 log("Analytics auto-saved to disk.")
 
-        for ad in availability_domains:
-            launch_blueprint = oci.core.models.LaunchInstanceDetails(
-                compartment_id=compartment_id, display_name=OCI_DISPLAY_NAME,
-                shape=OCI_SHAPE, shape_config=shape_config, source_details=source_details, 
-                create_vnic_details=create_vnic_details, metadata={"ssh_authorized_keys": OCI_SSH_KEY}, 
-                availability_domain=ad
-            )
-            
-            try:
-                log(f"Attempting launch in domain {ad}...")
-                response = compute_client.launch_instance(launch_instance_details=launch_blueprint)
-                server = response.data
-                
-                log("\n" + "="*55 + f"\nSUCCESS: SERVER CREATED!\nName: {server.display_name}\nOCID: {server.id}\n" + "="*55)
-                send_notifications(server.display_name, server.id)
-                os.system('termux-notification --title "SENTINEL SUCCESS!" --content "Your Server is ready." --priority high --vibrate 1000')
-                sys.stdout.write('\a'); sys.stdout.flush()
-                return # Exits script entirely upon success
-                
-            except oci.exceptions.ServiceError as e:
-                if e.status == 500 or "Out of host capacity" in str(e.message):
-                    log(f"Capacity full in {ad}.")
-                    capacity_error_hit = True; stats["capacity_errors"] += 1
-                    consecutive_rate_limits = 0 # Reset strikes on successful capacity check
-                    continue # Try next AD instantly without sleeping
-                    
-                elif e.status == 429 or "TooManyRequests" in str(e.code):
-                    consecutive_rate_limits += 1
-                    log(f"API Rate Limit Hit in {ad} (Strike {consecutive_rate_limits}).")
-                    rate_limit_hit_in_loop = True; stats["rate_limits"] += 1
-                    break # Stop checking ADs, go straight to sleep/pause
-                else:
-                    log(f"CRITICAL API EXCEPTION [{e.status}]: {e.message.strip()}")
-                    return
-            except Exception as e:
-                log(f"Network transport drop: {str(e)}")
-                capacity_error_hit = True
-                continue
-
-        # Post-AD Loop Delay & Notification Handling
-        if rate_limit_hit_in_loop:
-            if consecutive_rate_limits >= 3:
-                log("WARNING: 3 Strikes. Pausing script. Awaiting your command via Notification...")
-                
-                lock_file = os.path.expanduser("~/.sentinel_paused")
-                os.system(f"touch {lock_file}")
-                
-                action_continue = f"rm {lock_file}"
-                action_kill = f"tmux kill-session -t {SESSION_NAME}" # Unified targeting
-                
-                noti_cmd = (
-                    f'termux-notification --id "sentinel_alert" --title "⚠️ Sentinel Paused" '
-                    f'--content "Hit limit 3 times. What should I do?" --priority high --vibrate 500,500 '
-                    f'--button1 "Continue" --button1-action "{action_continue}" '
-                    f'--button2 "Kill" --button2-action "{action_kill}" '
-                    f'--on-delete "{action_continue}"'
+            for ad in availability_domains:
+                launch_blueprint = oci.core.models.LaunchInstanceDetails(
+                    compartment_id=compartment_id, display_name=OCI_DISPLAY_NAME,
+                    shape=OCI_SHAPE, shape_config=shape_config, source_details=source_details, 
+                    create_vnic_details=create_vnic_details, metadata={"ssh_authorized_keys": OCI_SSH_KEY}, 
+                    availability_domain=ad
                 )
-                os.system(noti_cmd)
-                
-                while os.path.exists(lock_file):
-                    time.sleep(2)
-                    
-                log("Lock file removed via notification. Resuming Sentinel operation...")
-                consecutive_rate_limits = 0 
+                try:
+                    log(f"Attempting launch in domain {ad}...")
+                    response = compute_client.launch_instance(launch_instance_details=launch_blueprint)
+                    server = response.data
+                    log("\n" + "="*55 + f"\nSUCCESS: SERVER CREATED!\nName: {server.display_name}\nOCID: {server.id}\n" + "="*55)
+                    send_notifications(server.display_name, server.id)
+                    os.system('termux-notification --title "SENTINEL SUCCESS!" --content "Your Server is ready." --priority high --vibrate 1000')
+                    sys.stdout.write('\a'); sys.stdout.flush()
+                    return
+                except oci.exceptions.ServiceError as e:
+                    if e.status == 500 or "Out of host capacity" in str(e.message):
+                        log(f"Capacity full in {ad}.")
+                        capacity_error_hit = True; stats["capacity_errors"] += 1
+                        consecutive_rate_limits = 0
+                        continue
+                    elif e.status == 429 or "TooManyRequests" in str(e.code):
+                        consecutive_rate_limits += 1
+                        log(f"API Rate Limit Hit in {ad} (Strike {consecutive_rate_limits}).")
+                        rate_limit_hit_in_loop = True; stats["rate_limits"] += 1
+                        break
+                    else:
+                        log(f"CRITICAL API EXCEPTION [{e.status}]: {e.message.strip()}")
+                        return
+                except Exception as e:
+                    log(f"Network transport drop: {str(e)}")
+                    capacity_error_hit = True
+                    continue
+
+            if rate_limit_hit_in_loop:
+                if consecutive_rate_limits >= 3:
+                    log("WARNING: 3 Strikes. Pausing script. Awaiting your command via Notification...")
+                    lock_file = os.path.expanduser("~/.sentinel_paused")
+                    os.system(f"touch {lock_file}")
+                    action_continue = f"rm {lock_file}"
+                    action_kill = f"tmux kill-session -t {SESSION_NAME}"
+                    noti_cmd = (f'termux-notification --id "sentinel_alert" --title "⚠️ Sentinel Paused" '
+                               f'--content "Hit limit 3 times. What should I do?" --priority high --vibrate 500,500 '
+                               f'--button1 "Continue" --button1-action "{action_continue}" '
+                               f'--button2 "Kill" --button2-action "{action_kill}" '
+                               f'--on-delete "{action_continue}"')
+                    os.system(noti_cmd)
+                    while os.path.exists(lock_file): time.sleep(2)
+                    log("Lock file removed via notification. Resuming Sentinel operation...")
+                    consecutive_rate_limits = 0
+                else:
+                    jitter_delay = random.randint(DELAY_RATE_LIMIT, int(DELAY_RATE_LIMIT * 1.5))
+                    log(f"Rate limited. Cycling queue in {jitter_delay}s (Jitter applied)...")
+                    time.sleep(jitter_delay)
+            elif capacity_error_hit:
+                sleep_time = get_sleep_time()
+                log(f"All queried domains are full. Cycling queue in {sleep_time}s...")
+                time.sleep(sleep_time)
             else:
-                jitter_delay = random.randint(DELAY_RATE_LIMIT, int(DELAY_RATE_LIMIT * 1.5))
-                log(f"Rate limited. Cycling queue in {jitter_delay}s (Jitter applied)...")
-                time.sleep(jitter_delay)
-                
-        elif capacity_error_hit:
-            sleep_time = get_sleep_time()
-            log(f"All queried domains are full. Cycling queue in {sleep_time}s...")
-            time.sleep(sleep_time)
-        else:
-            time.sleep(get_sleep_time())
+                time.sleep(get_sleep_time())
+
+        except Exception as e:
+            log(f"Loop Exception: {str(e)}")
+            time.sleep(30)
 
 if __name__ == "__main__":
     try:
