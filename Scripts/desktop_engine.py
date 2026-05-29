@@ -143,6 +143,10 @@ def main():
         if len(active_instances) >= OCI_MAX_INSTANCES:
             log(f"HALT: Limit met. Already have {len(active_instances)} instance(s) running.")
             return
+    except oci.exceptions.RequestException:
+        log("Network Error: Could not reach Oracle. Retrying in 60s...")
+        time.sleep(60)
+        return main()
     except Exception as e:
         log(f"Failed to query account instances: {str(e)}")
         return
@@ -150,6 +154,10 @@ def main():
     try:
         ad_data = identity_client.list_availability_domains(compartment_id=compartment_id).data
         availability_domains = [ad.name for ad in ad_data]
+    except oci.exceptions.RequestException:
+        log("Network Error: Could not reach Oracle. Retrying in 60s...")
+        time.sleep(60)
+        return main()
     except Exception as e:
         log(f"Failed to query Availability Domains: {str(e)}")
         return
@@ -209,6 +217,11 @@ def main():
                     else:
                         log(f"CRITICAL API EXCEPTION [{e.status}]: {e.message.strip()}")
                         return
+                except oci.exceptions.RequestException:
+                    log(f"Network lost. Pausing for 60s...")
+                    stats["total_attempts"] -= 1
+                    time.sleep(60)
+                    break
                 except Exception as e:
                     log(f"Network transport drop: {str(e)}")
                     capacity_error_hit = True

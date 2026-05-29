@@ -78,6 +78,13 @@ def save_stats():
         last_save_time = time.time()
     except: pass
 
+
+def notify_network_error(is_active):
+    if is_active:
+        os.system('termux-notification --id "sentinel_net" --title "⚠️ Sentinel: Network Lost" --content "WiFi/Data disconnected. Waiting for connection..." --priority high --vibrate 500')
+    else:
+        os.system('termux-notification-remove sentinel_net')
+
 def log(message):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     # Include attempt count if available
@@ -145,6 +152,11 @@ def main():
         if len(active_instances) >= OCI_MAX_INSTANCES:
             log(f"HALT: Limit met. Already have {len(active_instances)} instance(s) running.")
             return
+    except oci.exceptions.RequestException:
+        log("Network Error: Could not reach Oracle. Retrying in 60s...")
+        notify_network_error(True)
+        time.sleep(60)
+        return main()
     except Exception as e:
         log(f"Failed to query account instances: {str(e)}")
         return
@@ -152,6 +164,12 @@ def main():
     try:
         ad_data = identity_client.list_availability_domains(compartment_id=compartment_id).data
         availability_domains = [ad.name for ad in ad_data]
+        notify_network_error(False)
+    except oci.exceptions.RequestException:
+        log("Network Error: Could not reach Oracle. Retrying in 60s...")
+        notify_network_error(True)
+        time.sleep(60)
+        return main()
     except Exception as e:
         log(f"Failed to query Availability Domains: {str(e)}")
         return
@@ -199,6 +217,7 @@ def main():
                     sys.stdout.write('\a'); sys.stdout.flush()
                     return
                 except oci.exceptions.ServiceError as e:
+                    notify_network_error(False)
                     if e.status == 500 or "Out of host capacity" in str(e.message):
                         log(f"Capacity full in {ad}.")
                         capacity_error_hit = True; stats["capacity_errors"] += 1
@@ -212,6 +231,12 @@ def main():
                     else:
                         log(f"CRITICAL API EXCEPTION [{e.status}]: {e.message.strip()}")
                         return
+                except oci.exceptions.RequestException:
+                    log("Network lost. Pausing for 60s...")
+                    notify_network_error(True)
+                    stats["total_attempts"] -= 1
+                    time.sleep(60)
+                    break
                 except Exception as e:
                     log(f"Network transport drop: {str(e)}")
                     capacity_error_hit = True

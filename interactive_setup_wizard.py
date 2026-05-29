@@ -4,6 +4,12 @@ import os
 import sys
 import subprocess
 
+try:
+    import oci
+except ImportError:
+    print("⚠️ OCI Python SDK not found. Please run 'pip install oci' first.")
+    sys.exit(1)
+
 CONFIG_FILE = "config.json"
 
 def clear_screen():
@@ -72,39 +78,86 @@ def handle_ssh_key():
         print(f"⚠️ Could not auto-generate SSH key: {e}")
         return input("Please manually paste your SSH Public Key (ssh-rsa...): ").strip()
 
-def get_ids_via_browser(config):
+def discover_network(config):
     clear_screen()
     print("=========================================================")
-    print("      STEP 2: THE F12 BROWSER TRICK (THE EASY WAY)")
+    print("      STEP 2: AUTOMATIC NETWORK DISCOVERY")
     print("=========================================================")
-    print("We need to tell the Sentinel exactly what network and operating system")
-    print("to use. The easiest way to get these IDs is directly from the browser.")
-    print("\nRead these instructions carefully:")
-    print("  1. Go to the Oracle Cloud Web Console -> Create Instance.")
-    print("  2. Configure your server exactly how you want it.")
-    print("     (e.g., Ubuntu 24.04, Ampere ARM, 4 OCPUs, 24GB RAM).")
-    print("  3. BEFORE you click the 'Create' button, press F12 to open Developer Tools.")
-    print("  4. Click the 'Network' tab in Developer Tools.")
-    print("  5. Now, click the blue 'Create' button on the Oracle webpage.")
-    print("     (It will fail with an 'Out of capacity' error. This is normal).")
-    print("  6. Look in the Network tab for a red failing request named 'instances'. Click it.")
-    print("  7. Look at the 'Payload' or 'Request' section of that network call.")
-    print("  8. You will see a block of code containing all your server details.")
-    print("=========================================================\n")
+    print("Fetching your Virtual Cloud Networks (VCNs)...")
     
-    # Image ID
-    print("Look in the Payload for 'imageId'.")
-    img_id = input(f"Paste your Image ID here (Press Enter to keep '{config.get('OCI_IMAGE_ID', '')}'): ").strip()
+    try:
+        oci_cfg = oci.config.from_file()
+        network_client = oci.core.VirtualNetworkClient(oci_cfg)
+        compartment_id = oci_cfg["tenancy"]
+        
+        vcns = network_client.list_vcns(compartment_id=compartment_id).data
+        
+        if not vcns:
+            print("❌ No VCNs found in your account. Please create one in the Oracle Console first.")
+            sys.exit(1)
+            
+        print("\nSelect a VCN:")
+        for i, vcn in enumerate(vcns):
+            print(f"  [{i+1}] {vcn.display_name} ({vcn.id})")
+            
+        vcn_choice = -1
+        while vcn_choice < 0 or vcn_choice >= len(vcns):
+            try:
+                user_input = input(f"\nEnter choice (1-{len(vcns)}): ")
+                if not user_input: continue
+                vcn_choice = int(user_input) - 1
+            except ValueError:
+                pass
+                
+        selected_vcn = vcns[vcn_choice]
+        print(f"✅ Selected VCN: {selected_vcn.display_name}")
+        
+        print("\nFetching subnets for this VCN...")
+        subnets = network_client.list_subnets(compartment_id=compartment_id, vcn_id=selected_vcn.id).data
+        
+        if not subnets:
+            print(f"❌ No subnets found in VCN '{selected_vcn.display_name}'.")
+            sys.exit(1)
+            
+        print("\nSelect a Subnet:")
+        for i, subnet in enumerate(subnets):
+            type_str = "Public" if not subnet.prohibit_public_ip_on_vnic else "Private"
+            print(f"  [{i+1}] {subnet.display_name} [{type_str}] ({subnet.id})")
+            
+        sub_choice = -1
+        while sub_choice < 0 or sub_choice >= len(subnets):
+            try:
+                user_input = input(f"\nEnter choice (1-{len(subnets)}): ")
+                if not user_input: continue
+                sub_choice = int(user_input) - 1
+            except ValueError:
+                pass
+                
+        selected_subnet = subnets[sub_choice]
+        config["OCI_SUBNET_ID"] = selected_subnet.id
+        print(f"✅ Selected Subnet: {selected_subnet.display_name}")
+        
+        # Public IP Logic
+        if not selected_subnet.prohibit_public_ip_on_vnic:
+            choice = input("\nDo you want to assign a Public IP automatically? (y/n) [Default y]: ").lower().strip()
+            config["OCI_ASSIGN_PUBLIC_IP"] = False if choice == 'n' else True
+        else:
+            print("\n⚠️ This is a Private Subnet. Public IP assignment is disabled.")
+            config["OCI_ASSIGN_PUBLIC_IP"] = False
+
+    except Exception as e:
+        print(f"❌ Error during network discovery: {str(e)}")
+        print("\nFalling back to manual entry...")
+        config["OCI_SUBNET_ID"] = input("Paste your Subnet OCID: ").strip()
+
+    # Image ID (Kept manual for now)
+    print("\n" + "="*55)
+    print("Now, we need the Image OCID (Operating System).")
+    print("You can still find this using the F12 trick or the Oracle Console.")
+    img_id = input(f"Paste Image OCID (Press Enter to keep '{config.get('OCI_IMAGE_ID', '')}'): ").strip()
     if img_id: config["OCI_IMAGE_ID"] = img_id
     while not config.get("OCI_IMAGE_ID"):
-        config["OCI_IMAGE_ID"] = input("⚠️ Image ID is required. Paste 'imageId': ").strip()
-
-    # Subnet ID
-    print("\nLook in the Payload for 'subnetId'.")
-    sub_id = input(f"Paste your Subnet ID here (Press Enter to keep '{config.get('OCI_SUBNET_ID', '')}'): ").strip()
-    if sub_id: config["OCI_SUBNET_ID"] = sub_id
-    while not config.get("OCI_SUBNET_ID"):
-        config["OCI_SUBNET_ID"] = input("⚠️ Subnet ID is required. Paste 'subnetId': ").strip()
+        config["OCI_IMAGE_ID"] = input("⚠️ Image OCID is required: ").strip()
 
     # Display Name
     print("\nWhat should we name the server?")
@@ -164,8 +217,11 @@ def main():
     
     # Load existing config or initialize a new one
     if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'r') as f:
-            config = json.load(f)
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+        except:
+            config = {}
     else:
         config = {
             "OCI_SHAPE": "VM.Standard.A1.Flex", "OCI_OCPUS": 4, "OCI_MEMORY_IN_GBS": 24,
@@ -176,8 +232,8 @@ def main():
     # Step 2: Grab SSH Key Automatically
     config["OCI_SSH_PUBLIC_KEY"] = handle_ssh_key()
     
-    # Step 3: F12 Trick for OCIDs
-    get_ids_via_browser(config)
+    # Step 3: Automatic Network Discovery
+    discover_network(config)
     
     # Step 4: Configure Timers
     configure_delays(config)
