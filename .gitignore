@@ -18,3 +18,5 @@ Thumbs.db
 # Runtime sentinel pause lockfiles
 .sentinel_paused
 .sniper_pausedfull_config.json
+full_config.json
+config*
